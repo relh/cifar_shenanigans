@@ -26,7 +26,7 @@ args = p.parse_args()
 
 transform = transforms.Compose(
     [transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))])
 
 # Load datasets 
 train_dataset = CIFAR100('.', train=True, download=True, transform=transform)

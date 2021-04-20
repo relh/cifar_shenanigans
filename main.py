@@ -1,13 +1,14 @@
 import argparse
-import pdb
+import os
 import sys
 import time
 
-import numpy as np
 import torch
+import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
-from torch.utils.data import DataLoader, Subset, SubsetRandomSampler
+import torchvision.transforms as transforms
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import DataLoader, SubsetRandomSampler
 from torchvision.datasets import CIFAR100
 from tqdm import tqdm
 
@@ -16,14 +17,19 @@ from resnet import ResNet18
 p = argparse.ArgumentParser()
 # Choose which magnetic field parameter to predict
 p.add_argument('--setting', default='fiveway', type=str, help='what experiment to run, normal/fiveway')
+p.add_argument('--mode', default='training|testing', type=str, help='what to run')
 
 # Specify GPU to load network to and run image on
 p.add_argument('--device', default='cuda:0', type=str, help='cuda GPU to run the network on')
 args = p.parse_args()
 
+transform = transforms.Compose(
+    [transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
 # Load datasets 
-train_dataset = CIFAR100('.', train=True, download=True)
-test_dataset = CIFAR100('.', train=False, download=True)
+train_dataset = CIFAR100('.', train=True, download=True, transform=transform)
+test_dataset = CIFAR100('.', train=False, download=True, transform=transform)
 
 # Specify an arbitrary division of the data, first 3/5 training, next 1/5 validation.
 # These ranges are sequentially assigned due to test data occuring subsequently. 
@@ -32,21 +38,31 @@ val_indices = range(int(len(train_dataset)*4/5), int(len(train_dataset)))
 test_indices = range(int(len(test_dataset)))
 
 # Create data loaders
-train_loader = DataLoader(train_dataset, batch_size=1, sampler=SubsetRandomSampler(train_indices), num_workers=1, pin_memory=False)
-val_loader = DataLoader(train_dataset, batch_size=1, sampler=SubsetRandomSampler(val_indices), num_workers=1, pin_memory=False)
-test_loader = DataLoader(test_dataset, batch_size=1, num_workers=1, pin_memory=False)
+train_loader = DataLoader(train_dataset, batch_size=128, sampler=SubsetRandomSampler(train_indices), num_workers=1, pin_memory=False)
+val_loader = DataLoader(train_dataset, batch_size=128, sampler=SubsetRandomSampler(val_indices), num_workers=1, pin_memory=False)
+test_loader = DataLoader(test_dataset, batch_size=128, num_workers=1, pin_memory=False)
 
 # Create model and initialize optimizers
 #net = UNet(28, 1, batchnorm=False, dropout=0.3, regression=False, bins=80, bc=64).to(args.device)
-net = ResNet18()
+net = ResNet18().to(args.device)
 optimizer = optim.AdamW(net.parameters(), lr=1e-4, weight_decay=1e-4, eps=1e-3)#, betas=(0.5, 0.999))
 rlrop = ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.5)
+criterion = nn.CrossEntropyLoss()
 
 # Training loop
 bins = 10
 epoch_len = 2500
 
-pdb.set_trace()
+def load():
+    options = [(x, float(x.split('_')[-1][:-4])) for x in os.listdir('./models/') if '.pth' in x and args.setting in x]
+    if len(options) > 0:
+        options = sorted(options, key=lambda tup: tup[1], reverse=False)
+        print(options[0][0])
+        model_in_path = os.path.join('./models/', options[0][0])
+        load_dict = torch.load(os.path.join('./models/', options[0][0]), args.device)
+        net.load_state_dict(load_dict['model'])
+        print('loaded:\t{}'.format(options[0][0]))
+    return net
 
 def run_epoch(data_loader, net, optimizer, rlrop, epoch, is_train=True):
     start = time.time()
@@ -57,40 +73,16 @@ def run_epoch(data_loader, net, optimizer, rlrop, epoch, is_train=True):
     pbar = tqdm(data_loader, ncols=300)
     for i, batch in enumerate(pbar):
         # ================ preprocess in/output =====================
-        im_inp = batch['X']
-        field_mask = batch['field_mask']
-
-        # =============== classification target =====================
-        class_target = batch['Y']
-        class_target = (class_target * ((bins-1) / train_dataset.max_divisor)).clamp(0, bins-1)
-        mod_shape = list(class_target.shape) + [bins]
-
-        class_target = class_target.unsqueeze(4)
-        class_ones = torch.ones(class_target.shape, requires_grad=False)
-        class_zeros = torch.zeros(mod_shape, requires_grad=False)
-        class_zeros1 = torch.zeros(mod_shape, requires_grad=False)
-
-        floored = class_target.floor()
-        plus1 = (floored + 1).clamp(0, bins-1) # the next bin, but clamping to avoid oob
-        class_target = class_target - floored       # how much weight you want
-
-        # scatter both and multiply
-        floored = (class_zeros.scatter_(4, floored.long(), class_ones) * (1.0-class_target)).view(-1, 1, bins)
-        plus1 = (class_zeros1.scatter_(4, plus1.long(), class_ones) * class_target).view(-1, 1, bins)
-        class_target = (floored + plus1) + 1e-4
-        class_target = class_target.squeeze() / class_target.sum(dim=2)
-
-        field_mask = field_mask.to(args.device).flatten()
-        class_target = class_target.to(args.device)[field_mask > 0.7]
+        im_inp = batch[0].to(args.device)
+        target = batch[1].to(args.device)
 
         # ================== forward + losses =======================
         optimizer.zero_grad()
 
         pred = net(im_inp.to(args.device))
 
-        pred = torch.nn.functional.log_softmax(pred, dim=1)
-        pred = pred.reshape(1, bins, -1).permute(0,2,1).reshape(-1, bins)[field_mask > 0.7]
-        loss = torch.nn.KLDivLoss(reduction='sum')(pred, class_target)
+        # =============== classification target =====================
+        loss = criterion(pred, target)
 
         if is_train:
             loss.backward()
@@ -104,8 +96,7 @@ def run_epoch(data_loader, net, optimizer, rlrop, epoch, is_train=True):
             '{} epoch {}: itr {:<6}/ {}- {}- iml {:.4f}- aiml {:.4f}- dt {:.4f}'
           .format('TRAIN' if is_train else 'VAL  ', 
                   epoch, i * data_loader.batch_size, len(data_loader) * data_loader.batch_size, # steps
-                  args.target,
-                  loss / data_loader.batch_size, losses / (i+1), # print batch loss and avg loss
+                  args.setting, loss / data_loader.batch_size, losses / (i+1), # print batch loss and avg loss
                   time.time() - start)) # batch time
 
         # ================== termination ====================
@@ -116,22 +107,48 @@ def run_epoch(data_loader, net, optimizer, rlrop, epoch, is_train=True):
         rlrop.step(avg_loss)
     return avg_loss
 
-# Meta training loop
-train_losses, val_losses = [], []
-min_loss = sys.maxsize
-failed_epochs = 0
+if 'training' in args.mode:
+    train_losses, val_losses = [], []
+    min_loss = sys.maxsize
+    failed_epochs = 0
+    net = load()
 
-for epoch in range(100):
-    train_losses.append(run_epoch(train_loader, net, optimizer, rlrop, epoch, is_train=True))
-    val_losses.append(run_epoch(val_loader, net, optimizer, rlrop, epoch, is_train=False))
+    for epoch in range(10):
+        train_losses.append(run_epoch(train_loader, net, optimizer, rlrop, epoch, is_train=True))
+        val_losses.append(run_epoch(val_loader, net, optimizer, rlrop, epoch, is_train=False))
 
-    if val_losses[-1] < min_loss:
-        min_loss = val_losses[-1]
-        failed_epochs = 0
-        model_out_path = './models/' + '_'.join([args.target, str(epoch), str(float(min_loss))]) + '.pth'
-        torch.save({'model': net.state_dict(), 'optimizer': optimizer.state_dict()}, model_out_path)
-        print('saved model..\t\t\t {}'.format(model_out_path))
-    else:
-        failed_epochs += 1
-        print('--> loss failed to decrease {} epochs..\t\t\tthreshold is {}, {} all..{}'.format(failed_epochs, 6, val_losses, min_loss))
-        if failed_epochs > 4: break
+        if val_losses[-1] < min_loss:
+            min_loss = val_losses[-1]
+            failed_epochs = 0
+            model_out_path = './models/' + '_'.join([args.setting, str(epoch), str(float(min_loss))]) + '.pth'
+            torch.save({'model': net.state_dict(), 'optimizer': optimizer.state_dict()}, model_out_path)
+            print('saved model..\t\t\t {}'.format(model_out_path))
+        else:
+            net = load()
+            failed_epochs += 1
+            print('--> loss failed to decrease {} epochs..\t\t\tthreshold is {}, {} all..{}'.format(failed_epochs, 6, val_losses, min_loss))
+            if failed_epochs > 4: break
+
+if 'testing' in args.mode:
+    net = load()
+    torch.set_grad_enabled(False)
+    net = net.eval()
+    pbar = tqdm(test_loader, ncols=300)
+    correct = 0
+    total = 0
+
+    for i, batch in enumerate(pbar):
+        # ================ preprocess in/output =====================
+        im_inp = batch[0].to(args.device)
+        target = batch[1].to(args.device)
+        
+        pred = net(im_inp.to(args.device))
+
+        values, indices = pred.max(dim=1)
+
+        correct += (target == indices).sum()
+        total += target.shape[0]
+
+    print(f'Correct: {correct}')
+    print(f'Total: {total}')
+    print(f'%: {100.0 * (correct / (total * 1.0))}')

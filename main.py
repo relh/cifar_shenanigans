@@ -21,7 +21,7 @@ p.add_argument('--mode', default='training|testing', type=str, help='what to run
 
 # Specify GPU to load network to and run image on
 p.add_argument('--device', default='cuda:0', type=str, help='cuda GPU to run the network on')
-p.add_argument('--batch_size', default=512, type=int, help='batch size')
+p.add_argument('--batch_size', default=128, type=int, help='batch size')
 args = p.parse_args()
 
 transform = transforms.Compose(

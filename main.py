@@ -16,11 +16,12 @@ from resnet import ResNet18
 
 p = argparse.ArgumentParser()
 # Choose which magnetic field parameter to predict
-p.add_argument('--setting', default='fiveway', type=str, help='what experiment to run, normal/fiveway')
+p.add_argument('--setting', default='default', type=str, help='what experiment to run, normal/fiveway')
 p.add_argument('--mode', default='training|testing', type=str, help='what to run')
 
 # Specify GPU to load network to and run image on
 p.add_argument('--device', default='cuda:0', type=str, help='cuda GPU to run the network on')
+p.add_argument('--batch_size', default=512, type=int, help='batch size')
 args = p.parse_args()
 
 transform = transforms.Compose(
@@ -38,20 +39,18 @@ val_indices = range(int(len(train_dataset)*4/5), int(len(train_dataset)))
 test_indices = range(int(len(test_dataset)))
 
 # Create data loaders
-train_loader = DataLoader(train_dataset, batch_size=128, sampler=SubsetRandomSampler(train_indices), num_workers=1, pin_memory=False)
-val_loader = DataLoader(train_dataset, batch_size=128, sampler=SubsetRandomSampler(val_indices), num_workers=1, pin_memory=False)
-test_loader = DataLoader(test_dataset, batch_size=128, num_workers=1, pin_memory=False)
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=SubsetRandomSampler(train_indices), num_workers=1, pin_memory=False)
+val_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=SubsetRandomSampler(val_indices), num_workers=1, pin_memory=False)
+test_loader = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=1, pin_memory=False)
 
 # Create model and initialize optimizers
-#net = UNet(28, 1, batchnorm=False, dropout=0.3, regression=False, bins=80, bc=64).to(args.device)
 net = ResNet18().to(args.device)
-optimizer = optim.AdamW(net.parameters(), lr=1e-4, weight_decay=1e-4, eps=1e-3)#, betas=(0.5, 0.999))
+optimizer = optim.AdamW(net.parameters(), lr=1e-2/args.batch_size, weight_decay=1e-4, eps=1e-3)#, betas=(0.5, 0.999))
 rlrop = ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.5)
 criterion = nn.CrossEntropyLoss()
 
 # Training loop
-bins = 10
-epoch_len = 2500
+epoch_len = 40000 
 
 def load():
     options = [(x, float(x.split('_')[-1][:-4])) for x in os.listdir('./models/') if '.pth' in x and args.setting in x]
@@ -113,7 +112,7 @@ if 'training' in args.mode:
     failed_epochs = 0
     net = load()
 
-    for epoch in range(10):
+    for epoch in range(100):
         train_losses.append(run_epoch(train_loader, net, optimizer, rlrop, epoch, is_train=True))
         val_losses.append(run_epoch(val_loader, net, optimizer, rlrop, epoch, is_train=False))
 

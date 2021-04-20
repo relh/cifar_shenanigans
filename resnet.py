@@ -4,9 +4,48 @@ Reference:
 [1] Kaiming He, Xiangyu Zhang, Shaoqing Ren, Jian Sun
     Deep Residual Learning for Image Recognition. arXiv:1512.03385
 '''
+import pdb
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+class SwitchBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(SwitchBlock, self).__init__()
+        self.conv1 = nn.Conv2d(
+            in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion*planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion*planes,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion*planes)
+            )
+
+        self.switch = None
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+
+        if self.switch == None:
+            # No switch initialized yet, make it
+            self.switch = (torch.rand((out.shape[1], out.shape[2], out.shape[3])) * 3.0).round().long()
+
+        finalout = F.relu(out)
+        finalout[:, self.switch == 1] = F.sigmoid(out[:, self.switch == 1])
+        finalout[:, self.switch == 2] = F.tanh(out[:, self.switch == 2])
+        return out
 
 
 class BasicBlock(nn.Module):
@@ -102,9 +141,15 @@ class ResNet(nn.Module):
         return out
 
 
+def SwitchNet18():
+    return ResNet(SwitchBlock, [2, 2, 2, 2])
+
+def SwitchNet34():
+    return ResNet(SwitchBlock, [3, 4, 6, 3])
+
+
 def ResNet18():
     return ResNet(BasicBlock, [2, 2, 2, 2])
-
 
 def ResNet34():
     return ResNet(BasicBlock, [3, 4, 6, 3])
@@ -113,10 +158,8 @@ def ResNet34():
 def ResNet50():
     return ResNet(Bottleneck, [3, 4, 6, 3])
 
-
 def ResNet101():
     return ResNet(Bottleneck, [3, 4, 23, 3])
-
 
 def ResNet152():
     return ResNet(Bottleneck, [3, 8, 36, 3])

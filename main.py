@@ -12,11 +12,11 @@ from torch.utils.data import DataLoader, SubsetRandomSampler
 from torchvision.datasets import CIFAR100
 from tqdm import tqdm
 
-from resnet import ResNet18
+from resnet import ResNet18, SwitchNet18
 
 p = argparse.ArgumentParser()
 # Choose which magnetic field parameter to predict
-p.add_argument('--setting', default='default', type=str, help='what experiment to run, normal/fiveway')
+p.add_argument('--setting', default='cerebus', type=str, help='what experiment to run, normal/fiveway')
 p.add_argument('--mode', default='training|testing', type=str, help='what to run')
 
 # Specify GPU to load network to and run image on
@@ -44,7 +44,8 @@ val_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=Subse
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=1, pin_memory=False)
 
 # Create model and initialize optimizers
-net = ResNet18().to(args.device)
+if args.setting == 'cerebus': net = SwitchNet18().to(args.device)
+else:                         net = ResNet18().to(args.device)
 optimizer = optim.AdamW(net.parameters(), lr=1e-2/args.batch_size, weight_decay=1e-4, eps=1e-3)#, betas=(0.5, 0.999))
 rlrop = ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.5)
 criterion = nn.CrossEntropyLoss()
